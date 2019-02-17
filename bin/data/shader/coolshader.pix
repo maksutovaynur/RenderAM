@@ -1,0 +1,160 @@
+#version 300 es
+precision mediump float;
+uniform sampler2D albedo;
+uniform sampler2D microsurface;
+uniform sampler2D reflectivity;
+uniform sampler2D fresnel;
+uniform sampler2D normalMap;
+uniform samplerCube sky;
+uniform samplerCube envmap;
+uniform float exp;
+uniform vec3 light;
+uniform float mss, rss, k, exposure;
+uniform int mode;
+uniform mat3 skymm;
+uniform float currentTime;
+in vec2 texCoord;
+in vec3 outNormal;
+in vec3 relPos;
+in vec3 position;
+in mat3 tr;
+in mat3 vim;
+layout(location = 0) out vec4 fragColor;
+
+const float pi = 3.14159265359f;
+
+float Chi(float x)
+{
+    if(x > 0.f) return 1.f;
+    else return 0.f;
+}
+
+float Distribution(float cost, float roughness)
+{
+    float a2 = 0.000001f+roughness*roughness;
+    float dn = cost;
+    if(dn<0.00000001f) return 0.f;
+    float dn2 = dn*dn;
+    float tan2 = (1.f-dn2)/dn2;
+    float denom = a2+tan2;
+    denom*=dn2;
+    denom*=denom;
+    denom*=pi;
+    return Chi(dn)*a2/denom;
+}
+
+vec3 Fresnel_Schlick(float cosT, vec3 F0)
+{
+    return F0+(vec3(1.f)-F0)*pow(1.f-cosT, 5.f);
+}
+
+float PartialGeometry(float dn, float dh, float roughness)
+{
+    float chi = Chi(dh/clamp(dn, 0.001f, 1.f));
+    dh*=dh;
+    float tan2 = (1.f-dh)/dh;
+    return 2.f*chi/(1.f+sqrt(1.f+roughness*roughness*tan2));
+}
+
+float Rand(vec2 co)
+{
+    float dn = dot(co.xy ,vec2(12.9898,78.233));
+    float h = dn*0.43758545763;
+    h = fract(h);
+    return abs(h);
+}
+
+vec3 CookTorrance(int maxcount, vec3 view, vec3 tang, vec3 bitang, vec3 normal, vec3 color,
+    float roughness, float ior, float metallic)
+{
+    float pi = 3.14159;
+    int len = 30;
+    int count = int(roughness*float(maxcount-1))+1;
+    float integ[101];
+    float delta = pi/(2.f*float(len));
+    vec3 vnormal = normalize(vim*normal);
+    for(int i = 0; i < len; i++)
+    {
+        integ[i+1] = Distribution(cos(float(i)*delta), roughness);
+    }
+    for(int i = 2; i < len+1; i++)
+    {
+        integ[i]+=integ[i-1];
+    }
+    if(integ[len]<=0.f) return vec3(0.f, 0.f, 0.f);
+    for(int i = 1; i < len; i++)
+    {
+        integ[i]/=integ[len];
+    }
+    integ[len] = 1.f;
+    integ[0] = 0.f;
+    vec3 F0 = vec3(abs((1.f-ior)/(1.f+ior)));
+    F0*=F0;
+    F0 = mix(F0, color, metallic);
+    vec3 ibl = vec3(0.f);
+    for(int i = 0; i < count; i++)
+    {
+        float equ = Rand(vec2(float(i)));
+        int k = len;
+        while(integ[k]>equ) k--;
+        float alpha = (float(k)+Rand(currentTime*vec2(float(i))))*delta;
+        float cost = cos(alpha);
+        float sint = sqrt(1.f - cost*cost);
+        float t = Rand(vec2(float(i+111), currentTime));
+        t = t*2.f*pi;
+        vec3 halfv = normal*cost + (tang*sin(t) + bitang*cos(t))*sint;
+        halfv = normalize(vim*halfv);
+        vec3 light = -normalize(reflect(view, halfv));
+        vec4 lightcolor = textureCube(envmap, skymm*(light*vim));
+        float nv = clamp(dot(vnormal, view), 0.f, 1.f);
+        float hv = clamp(dot(halfv, view), 0.f, 1.f);
+        vec3 fresnel = Fresnel_Schlick(hv, F0);
+        float geometry = PartialGeometry(nv, hv, roughness)*PartialGeometry(dot(light, vnormal), hv, roughness);
+        float denominator = clamp(4.f*nv*clamp(cost, 0.f, 1.f), 0.001f, 1.f);
+        ibl+= lightcolor.xyz*fresnel*geometry/denominator;
+    }
+    return ibl*10.f*exp/float(count);
+}
+
+void main()
+{
+    float t = 0.5f;
+    vec2 fixedTexCoord = vec2(texCoord.x, 1.0 - texCoord.y);
+    vec4 color = texture2D(albedo, fixedTexCoord);
+    vec3 albedo = color.xyz;
+    int theMode = mode;
+    switch(theMode)
+    {
+    case 0:
+        fragColor = vec4(1.f, 1.f, 1.f, 0.f);
+        break;
+    case 2:
+        albedo*=exposure;
+        vec4 roug = texture2D(microsurface, fixedTexCoord);
+        vec4 norm = texture2D(normalMap, fixedTexCoord);
+        vec4 refl = texture2D(reflectivity, fixedTexCoord);
+        vec4 fres = texture2D(fresnel, fixedTexCoord);
+        vec3 newNormal = 2.f*norm.xyz - vec3(1.f, 1.f, 1.f);
+        newNormal = tr*newNormal;
+        vec3 newTang = cross(vec3(1.f, 1.f, 0.f), newNormal);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(1.f, 0.f, 1.f), newNormal);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(0.f, 1.f, 1.f), newNormal);
+        vec3 newBitang = cross(newNormal, newTang);
+        newNormal = normalize(newNormal);
+        newTang = normalize(newTang);
+        newBitang = normalize(newBitang);
+        vec3 view = -normalize(position);
+        vec3 ibl = CookTorrance(1000, view, newTang, newBitang, newNormal, albedo, roug.x, fres.x*5.f+1.f, refl.x);
+        fragColor = vec4(ibl, 1.f);
+        break;
+    case 3:
+        vec4 col = textureCube(sky, relPos);
+        col.xyz*=exp;
+        float y = 0.01f;
+        col.xyz =col.xyz/(col.xyz+vec3(y));
+        col.w = 1.f;
+        fragColor = col;
+        break;
+    }
+}
+

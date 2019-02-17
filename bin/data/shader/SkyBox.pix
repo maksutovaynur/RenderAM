@@ -1,0 +1,18 @@
+#version 300 es
+precision mediump float;
+uniform samplerCube sky;
+uniform float k;
+
+in vec3 position;
+layout(location = 0) out vec4 fragColor;
+
+void main()
+{
+    vec4 col = textureCube(sky, position);
+    col.xyz*=k;
+    float y = 0.01f;
+    col.xyz =col.xyz/(col.xyz+vec3(y));
+    col.w = 1.f;
+    fragColor = col;
+}
+

@@ -1,0 +1,141 @@
+#version 300 es 
+precision mediump float;
+#define T float
+in vec2 texCoord;
+in vec4 outNormal;
+layout(location = 0) out vec4 fragColor;
+struct Complex{
+	T r;
+	T i;
+};
+
+const T radius_2 = 50000000.f;
+const T iterations = 220.f;
+Complex compCreate(T r, T i){
+	Complex result;
+	result.r = r;
+	result.i = i;
+	return result;
+}
+Complex Add(Complex x, Complex y){
+	Complex result;
+	result.r = x.r + y.r;
+	result.i = x.i + y.i;
+	return result;
+}
+Complex Subs(Complex x, Complex y){
+	Complex result;
+	result.r = x.r - y.r;
+	result.i = x.i - y.i;
+	return result;
+}
+Complex Mult(Complex x, Complex y){
+	Complex result;
+	result.r = x.r*y.r - x.i*y.i;
+	result.i = x.i*y.r + x.r*y.i;
+	return result;
+}
+Complex Sqr(Complex x){
+	Complex result;
+	result.r = x.r*x.r - x.i*x.i;
+	result.i = x.i*x.r*2.0;
+	return result;
+}
+T Abs2(Complex x){
+	T result;
+	result = x.r*x.r+x.i*x.i;
+	return result;
+}
+Complex ScalMult(Complex c, T x, T y){
+	Complex result;
+	result.r = x*c.r;
+	result.i = y*c.i;
+	return result;
+}
+Complex Div(Complex x, Complex y){
+	Complex result;
+	T div = 1.0/(y.r*y.r+y.i*y.i);
+	result.r = x.r*y.r + x.i*y.i;
+	result.i = x.i*y.r - x.r*y.i;
+	result.r*=div;
+	result.i*=div;
+	return result;
+}
+Complex Rev(Complex y){
+	Complex result;
+	T div = 1.0/(y.r*y.r+y.i*y.i);
+	result.r = y.r*div;
+	result.i = y.i*div;
+	return result;
+}
+Complex Chg(Complex y){
+	Complex result;
+	result.r = y.i;
+	result.i = y.r;
+	return result;
+}
+
+T CheckMandelbrot(Complex a, float iter, float radius2){
+	Complex b, c[10];
+	b = a;
+	T j = iter;
+	T abs = Abs2(b);
+	while((j>0.0)&&(radius2>abs)){
+		c[0] = b;
+		//c[0] = Chg(c[0]);
+		//c[0] = Rev(c[0]);
+		//c[0] = Sqr(c[0]);
+		//c[0] = Sqr(c[0]);
+		c[0] = Sqr(c[0]);
+		//c[0] = Sqr(c[0]);
+		//c[0] = Sqr(c[0]);
+		b = Add(c[0], a);
+		j = j - 1.0;
+		abs = Abs2(b);
+	}
+	return j;
+}
+
+float ScalMultV4(vec4 v1, vec4 v2)
+{
+	return v1.x*v2.x+v1.y*v2.y+v1.z*v2.z+v1.w*v2.w;
+}
+
+vec4 Normalize(vec4 v)
+{
+	vec4 a = v;
+	float length = sqrt(ScalMultV4(v,v));
+	a.x/=length;
+	a.y/=length;
+	a.z/=length;
+	a.w/=length;
+	return a;
+}
+void main()
+{
+	vec2 myPos = texCoord;
+	Complex myCompPos = compCreate(myPos.x, myPos.y);
+	T Result  = 35.f+CheckMandelbrot(myCompPos, iterations, radius_2);
+	float intence = Result/256.f;
+	vec4 v;
+	v[0] = intence;
+	v[1] = intence;
+	v[2] = 0.f;
+	v[3] = 1.f;
+	vec4 n = Normalize(outNormal);
+	vec4 light = vec4(0.f, 0.f, 1.f, 1.f);
+	float m  = ScalMultV4(n, light);
+	if(m<0.f) m=0.f;
+	v[0]*=m;
+	v[1]*=m;
+	v[2]*=m;	
+	fragColor = vec4(v);
+}
+
+vec2 calcul(vec2 oh){
+	vec2 col;
+	col = oh*0.1;
+	return col;
+}
+
+

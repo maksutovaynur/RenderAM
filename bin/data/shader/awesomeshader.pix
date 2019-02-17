@@ -1,0 +1,146 @@
+#version 300 es
+precision mediump float;
+uniform sampler2D albedo;
+uniform sampler2D microsurface;
+uniform sampler2D reflectivity;
+uniform sampler2D fresnel;
+uniform sampler2D normalMap;
+uniform samplerCube sky;
+uniform samplerCube envmap;
+uniform float exp;
+uniform vec3 light;
+uniform float mss, rss, k, exposure;
+uniform int mode;
+uniform mat3 skymm;
+in vec2 texCoord;
+in vec3 outNormal;
+in vec3 relPos;
+in vec3 position;
+in mat3 tr;
+in mat3 vim;
+layout(location = 0) out vec4 fragColor;
+
+const float pi = 3.14159265359f;
+
+float Chi(float x)
+{
+    if(x > 0.f) return 1.f;
+    else return 0.f;
+}
+
+float Distribution(vec3 direction, vec3 normal, float roughness)
+{
+    float a2 = 0.000001f+roughness*roughness;
+    float dn = dot(direction, normal);
+    float dn2 = clamp(dn*dn, 0.01f, 1.f);
+    float tan2 = (1.f-dn2)/dn2;
+    float denom = a2+tan2;
+    denom*=dn2;
+    denom*=denom;
+    denom*=pi;
+    return Chi(dn)*a2/denom;
+}
+
+vec3 Fresnel_Schlick(float cosT, vec3 F0)
+{
+    return F0+(vec3(1.f)-F0)*pow(1.f-cosT, 5.f);
+}
+
+float PartialGeometry(vec3 direction, vec3 normal, vec3 halfv, float roughness)
+{
+    float dh = clamp(dot(direction, halfv), 0.f, 1.f);
+    float chi = Chi(dh/clamp(dot(direction, normal), 0.f, 1.f));
+    dh*=dh;
+    float tan2 = (1.f-dh)/dh;
+    return 2.f*chi/(1.f+sqrt(1.f+roughness*roughness*tan2));
+}
+
+vec3 CookTorrance(vec3 view, vec3 light, vec3 normal, vec3 color, vec3 lightcolor,
+    float roughness, float ior, float metallic, out vec3 ks, out float weight)
+{
+    vec3 halfv = normalize(view+light);
+    float nv = clamp(dot(normal, view), 0.f, 1.f);
+    float hv = clamp(dot(halfv, view), 0.f, 1.f);
+    float cosT = clamp(dot(light, normal), 0.f, 1.f);
+    float sinT = sqrt(1.f - cosT*cosT);
+    vec3 F0 = vec3(abs((1.f-ior)/(1.f+ior)));
+    F0*=F0;
+    F0 = mix(F0, color, metallic);
+    vec3 fresnel = Fresnel_Schlick(hv, F0);
+    ks=clamp(fresnel, vec3(0.f), vec3(1.f));
+    float geometry = PartialGeometry(view, normal, halfv, roughness)*PartialGeometry(light, normal, halfv, roughness);
+    float denominator = 4.f*(nv*dot(halfv, normal) + 0.000001f);
+    float distribution = Distribution(normal, halfv, roughness);
+    weight=distribution;
+    return lightcolor*sinT*distribution*fresnel*geometry/denominator;
+}
+void main()
+{
+    float t = 0.5f;
+    vec2 fixedTexCoord = vec2(texCoord.x, 1.0 - texCoord.y);
+    vec4 color = texture2D(albedo, fixedTexCoord);
+    vec3 albedo = color.xyz;
+    int theMode = mode;
+    switch(theMode)
+    {
+    case 0:
+        fragColor = vec4(1.f, 1.f, 1.f, 0.f);
+        break;
+    case 2:
+        albedo*=exposure;
+        vec4 roug = texture2D(microsurface, fixedTexCoord);
+        vec4 norm = texture2D(normalMap, fixedTexCoord);
+        vec4 refl = texture2D(reflectivity, fixedTexCoord);
+        vec4 fres = texture2D(fresnel, fixedTexCoord);
+        vec3 newNormal = 2.f*norm.xyz - vec3(1.f, 1.f, 1.f);
+        newNormal = tr*newNormal;
+        //vec3 look = -position*vim;
+        //look = reflect(look, newNormal);
+        vec3 newTang = cross(vec3(1.f, 1.f, 0.f), newNormal);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(1.f, 0.f, 1.f), newNormal);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(0.f, 1.f, 1.f), newNormal);
+        vec3 newBitang = cross(newNormal, newTang);
+        newNormal = normalize(newNormal);
+        //look = normalize(look);
+        newTang = normalize(newTang);
+        newBitang = normalize(newBitang);
+        float pi = 3.141592;
+        vec3 ibl = vec3(0.f);
+        float delta = 0.05f;
+        float range = pi / 2.0 - 0.1f;//1.56f;
+        vec3 view = -normalize(position);
+        float weight = 0.f;
+        for(float a = -range; a <= range; a+=delta)
+        for(float b = -range; b <= range; b+=delta)
+        {
+        	float ka = tan(a);
+        	float kb = tan(b);
+                vec3 light = newNormal+ka*newTang+kb*newBitang;
+                //if(dot(light, newNormal) >= 0.f)
+        	{
+                    vec4 lightcolor = textureCube(envmap, normalize(skymm*light));
+                    vec3 ks = vec3(0.f);
+                    float pWeight;
+                    vec3 dl=CookTorrance(view, normalize(vim*light), normalize(vim*newNormal), albedo,
+                        lightcolor.xyz, roug.x, 1.f+10.f*fres.x, refl.x, ks, pWeight);
+                    //vec3 kd = roug.x*(vec3(1.f) - ks)*(1.f - refl.x);
+                    //ks = vec3(1.f) - kd;
+                    ibl+=dl;//albedo*lightcolor.xyz*kd+dl*ks;
+                    weight+=pWeight;
+                }
+        }
+        ibl/=weight;//pow(max(2.f*range/delta+1.f, 1.f), 2.f);
+        ibl*=100.f*exp;
+        fragColor = vec4(ibl, 1.f);
+        break;
+    case 3:
+        vec4 col = textureCube(sky, relPos);
+        col.xyz*=exp;
+        float y = 0.01f;
+        col.xyz =col.xyz/(col.xyz+vec3(y));
+        col.w = 1.f;
+        fragColor = col;
+        break;
+    }
+}
+

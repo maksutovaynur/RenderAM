@@ -1,0 +1,177 @@
+#version 300 es
+precision mediump float;
+uniform sampler2D albedo;
+uniform sampler2D microsurface;
+uniform sampler2D reflectivity;
+uniform sampler2D fresnel;
+uniform sampler2D normalMap;
+uniform samplerCube sky;
+uniform samplerCube envmap;
+uniform float exp;
+uniform vec3 light;
+uniform float mss, rss, k, exposure;
+uniform int mode;
+uniform mat3 skymm;
+in vec2 texCoord;
+in vec3 outNormal;
+in vec3 relPos;
+in vec3 position;
+in mat3 tr;
+in mat3 vim;
+layout(location = 0) out vec4 fragColor;
+
+vec4 CookTorrance(vec3 normal, vec3 viewer, vec3 light)
+{
+    return vec4(0.f, 0.f, 1.f, 1.f);
+}
+
+vec4 BlinnPhong(vec3 normal, vec3 viewer, vec3 light, vec3 color)
+{
+    normal = normalize(normal);
+    light = normalize(light);
+    viewer = normalize(viewer);
+    vec3 halfvec = normalize(viewer+normal);
+    float HdotN = max(0.f, dot(halfvec, normal));
+    float NdotL = max(0.f, dot(normal, light));
+    vec3 spec = NdotL*color*pow(HdotN, 250.f);
+    vec3 diff = color*NdotL;
+    return vec4(spec+diff, 1.f);
+}
+
+vec4 Phong(vec3 normal, vec3 viewer, vec3 light, vec3 color, vec3 lightcolor, vec3 rough, vec3 refl)
+{
+    normal = normalize(normal);
+    light = normalize(light);
+    viewer = normalize(viewer);
+    vec3 reflection = normalize(2.f*normal*dot(normal, light) - light);
+    float RdotV = max( 0.f, dot(reflection, viewer));
+    vec3 spec = color*pow(vec3(RdotV), 1.f/rough);
+    vec3 diff = color*refl*max(0.f, dot(normal, light));
+    return vec4((spec+diff)*lightcolor, 1.f);
+}
+
+float Fresnel(float x)
+{
+    float kf = 1.12f;
+    float kf2 =  1.f/(kf*kf);
+    float b = x - kf;
+    float res = 1.f/(b*b) - kf2;
+    b = 1.f -kf;
+    res/= 1.f/(b*b) - kf2;
+    return res;
+}
+
+float shadow(float x)
+{
+    const float ks = 1.01f;
+    float b = 1.f - ks;
+    b = 1.f/(b*b);
+    float c = x - ks;
+    c = 1.f/(c*c);
+    float res = b - c;
+    res/= b - 1.f/(ks*ks);
+    return res;
+}
+
+vec4 Strauss(vec3 normal, vec3 view, vec3 light, vec3 color, vec3 lightcolor,
+            vec3 smoothness, vec3 metalness, float transparency, vec3 refraction)
+{
+	//if(metalness>=0.f) return vec4(color, 1.f);
+    vec3 n = normalize(normal);
+    vec3 l = normalize(light);
+    vec3 v = normalize(view);
+    vec3 h = reflect(l, n);
+    float NdotL = dot(n, l);
+    if(NdotL<0.f) return vec4(0.f, 0.f, 0.f, 1.f);
+    float NdotV = dot(n, v);
+    float HdotV = dot(h, v);
+    float fNdotL = Fresnel(NdotL);
+    vec3 sm3 = smoothness*smoothness;
+    sm3*=sm3;
+    //return vec4(smoothness, 0.f, 0.f, 1.f);
+    vec3 d = (vec3(1.f) - metalness*smoothness);
+    vec3 rd = (vec3(1.f) - sm3)*(1.f - transparency);
+    vec3 diffuse = NdotL*d*rd*color;
+    vec3 r = vec3(1.f - transparency) - rd;
+    float j = fNdotL*shadow(NdotL)*shadow(NdotV);
+    vec3 refl = min(vec3(1.f), r+j*(r+refraction));
+    vec3 c1 = lightcolor;
+    vec3 cs = c1+metalness*(1.f - fNdotL)*(color-c1);
+    vec3 specular = cs*refl;
+    specular*=pow(vec3(-HdotV), 3.f/(1.f-smoothness));
+    diffuse = max(diffuse, 0.f);
+    specular = max(specular, 0.f);
+    return vec4(diffuse+specular, 1.f);
+}
+
+void main()
+{
+    float t = 0.5f;
+    vec2 fixedTexCoord = vec2(texCoord.x, 1.0 - texCoord.y);
+    vec4 color = texture2D(albedo, fixedTexCoord);
+    vec3 c = color.xyz;
+    int theMode = mode;
+    switch(theMode)
+    {
+    case 0:
+        fragColor = vec4(1.f, 1.f, 1.f, 0.f);
+        break;
+    case 1:
+        vec4 rough = texture2D(microsurface, fixedTexCoord);
+        vec4 nor = texture2D(normalMap, fixedTexCoord);
+        vec4 refl = texture2D(reflectivity, fixedTexCoord);
+        vec3 newNormal = 2.f*nor.xyz - vec3(1.f, 1.f, 1.f);
+        newNormal = tr*newNormal;
+        vec3 n = vim*newNormal;
+        fragColor = Phong(vim*n, -position, vim*light, c, vec3(1.f, 1.f, 1.f), rough.xyz, vec3(1.f)-refl.xyz);
+        break;
+    case 2:
+        c*=exposure;
+        rough = texture2D(microsurface, fixedTexCoord);
+        nor = texture2D(normalMap, fixedTexCoord);
+        refl = texture2D(reflectivity, fixedTexCoord);
+        vec4 fres = texture2D(fresnel, fixedTexCoord);
+        newNormal = 2.f*nor.xyz - vec3(1.f, 1.f, 1.f);
+        newNormal = tr*newNormal;
+        vec3 look = -position*vim;
+        look = reflect(look, newNormal);
+        vec3 newTang = cross(vec3(1.f, 0.f, 0.f), look);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(0.f, 1.f, 0.f), look);
+        if(length(newTang)<0.0001f) newTang = cross(vec3(0.f, 0.f, 1.f), look);
+        vec3 newBitang = cross(look, newTang);
+        newNormal = normalize(newNormal);
+        look = normalize(look);
+        newTang = normalize(newTang);
+        newBitang = normalize(newBitang);
+        vec4 ibl = vec4(0.f);
+        float delta = 0.05f;
+        float range = 0.0f;//1.56f;
+        for(float a = -range; a <= range; a+=delta)
+        for(float b = -range; b <= range; b+=delta)
+        {
+        	float ka = tan(a);
+        	float kb = tan(b);
+        	vec3 ligh = -look+ka*newTang+kb*newBitang;
+        	if(dot(ligh, newNormal) >= 0.f)
+        	{
+        		vec4 lightcolor = textureCube(envmap, skymm*ligh);
+        		ibl+=Strauss(vim*newNormal, -position, vim*ligh, c, lightcolor.xyz, vec3(1.f) - rough.xyz, refl.xyz, 0.f, fres.xyz);
+        		//ibl+=Phong(vim*newNormal, -position, vim*ligh, c, lightcolor.xyz, rough.xyz, refl.xyz);
+        	}
+        }
+        ibl.xyz/=(max(2.f*range/delta+1.f, 1.f));
+        ibl.xyz*=10.f*exp;
+        ibl.w = 1.f;
+        fragColor = ibl;
+        break;
+    case 3:
+        vec4 col = textureCube(sky, relPos);
+        col.xyz*=exp;
+        float y = 0.01f;
+        col.xyz =col.xyz/(col.xyz+vec3(y));
+        col.w = 1.f;
+        fragColor = col;
+        break;
+    }
+}
+

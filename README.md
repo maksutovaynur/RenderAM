@@ -1,2 +1,2 @@
 # RenderAM
-OpenGL-based physically based render
+Physically based renderer built on OpenGL 
